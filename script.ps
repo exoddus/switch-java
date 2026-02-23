@@ -1,0 +1,141 @@
+# ==========================================
+# Java Version Manager for PowerShell (Auto-detect)
+# ==========================================
+
+function Get-InstalledJdks {
+
+    $paths = @(
+        "C:\Program Files\Eclipse Adoptium",
+        "C:\Program Files\Java",
+        "C:\Program Files\Microsoft"
+    )
+
+    $jdks = @()
+
+    foreach ($base in $paths) {
+        if (Test-Path $base) {
+            Get-ChildItem $base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                if (Test-Path "$($_.FullName)\bin\java.exe") {
+
+                    $versionOutput = & "$($_.FullName)\bin\java.exe" -version 2>&1
+                    $versionLine = $versionOutput[0]
+
+                    if ($versionLine -match '"([^"]+)"') {
+                        $fullVersion = $matches[1]
+                        $majorVersion = $fullVersion.Split(".")[0]
+
+                        if ($majorVersion -eq "1") {
+                            $majorVersion = $fullVersion.Split(".")[1]
+                        }
+
+                        $jdks += [PSCustomObject]@{
+                            Version = $majorVersion
+                            FullVersion = $fullVersion
+                            Path = $_.FullName
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return $jdks | Sort-Object {[int]$_.Version} -Unique
+}
+
+function Install-Java {
+    param([string]$Version)
+
+    Write-Host "Instalando Java $Version con winget..."
+
+    winget install --id "EclipseAdoptium.Temurin.$Version.JDK" -e
+}
+
+function switch-java {
+
+    param(
+        [Parameter(Position=0)]
+        [string]$Version,
+
+        [ValidateSet("Session","User","Machine")]
+        [string]$Scope = "Session"
+    )
+
+    $jdks = Get-InstalledJdks
+
+    if ($Version -eq "list") {
+        Write-Host "JDKs detectados:"
+        $jdks | ForEach-Object {
+            Write-Host "Java $($_.Version) -> $($_.Path)"
+        }
+        return
+    }
+
+    if ($Version -eq "current") {
+        Write-Host "JAVA_HOME actual (session): $env:JAVA_HOME"
+        java -version
+        return
+    }
+
+    if (-not $Version) {
+        Write-Host "Uso:"
+        Write-Host "  switch-java list"
+        Write-Host "  switch-java current"
+        Write-Host "  switch-java <version> [-Scope Session|User|Machine]"
+        return
+    }
+
+    $selected = $jdks | Where-Object { $_.Version -eq $Version }
+
+    if (-not $selected) {
+        Write-Host "Java $Version no encontrado. Intentando instalar..."
+        Install-Java $Version
+        $jdks = Get-InstalledJdks
+        $selected = $jdks | Where-Object { $_.Version -eq $Version }
+
+        if (-not $selected) {
+            Write-Host "No se pudo instalar o detectar Java $Version."
+            return
+        }
+    }
+
+    if ($Scope -eq "Session") {
+
+        $env:JAVA_HOME = $selected.Path
+        $env:PATH = ($env:PATH -split ';' | Where-Object {$_ -notmatch 'jdk|temurin|java'} ) -join ';'
+        $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+
+        Write-Host "Java cambiado en SESSION a versión $Version"
+    }
+
+    elseif ($Scope -eq "User") {
+
+        [Environment]::SetEnvironmentVariable("JAVA_HOME", $selected.Path, "User")
+
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $cleanPath = ($currentPath -split ';' | Where-Object {$_ -notmatch 'jdk|temurin|java'} ) -join ';'
+        $newPath = "$($selected.Path)\bin;$cleanPath"
+
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+
+        Write-Host "Java cambiado como DEFAULT para el USUARIO."
+        Write-Host "Reabre la terminal para aplicar cambios."
+    }
+
+    elseif ($Scope -eq "Machine") {
+
+        Write-Host "Requiere PowerShell en modo Administrador."
+
+        [Environment]::SetEnvironmentVariable("JAVA_HOME", $selected.Path, "Machine")
+
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        $cleanPath = ($currentPath -split ';' | Where-Object {$_ -notmatch 'jdk|temurin|java'} ) -join ';'
+        $newPath = "$($selected.Path)\bin;$cleanPath"
+
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
+
+        Write-Host "Java cambiado como DEFAULT para TODO el sistema."
+        Write-Host "Reabre la terminal para aplicar cambios."
+    }
+
+    java -version
+}
